@@ -48,6 +48,8 @@ cdef extern from "pjlib.h":
         int slen
     ctypedef pj_str_t *pj_str_ptr_const "const pj_str_t *"
 
+    ctypedef long pj_ssize_t
+
     # errors
     pj_str_t pj_strerror(int statcode, char *buf, int bufsize) nogil
 
@@ -719,8 +721,13 @@ cdef extern from "pjmedia.h":
     struct pjmedia_transport_info:
         pjmedia_sock_info sock_info
         pj_sockaddr src_rtp_name
+        pj_sockaddr src_rtcp_name
         int specific_info_cnt
         pjmedia_transport_specific_info *spc_info
+    int pjmedia_transport_attach(pjmedia_transport *tp, void *user_data, pj_sockaddr *rem_addr, 
+                                 pj_sockaddr *rem_rtcp, unsigned addr_len, 
+                                 void (*rtp_cb)(void *user_data, void *pkt, pj_ssize_t), 
+                                 void (*rtcp_cb)(void *usr_data, void*pkt, pj_ssize_t)) nogil
     void pjmedia_transport_info_init(pjmedia_transport_info *info) nogil
     int pjmedia_transport_udp_create3(pjmedia_endpt *endpt, int af, char *name, pj_str_t *addr, int port,
                                       unsigned int options, pjmedia_transport **p_tp) nogil
@@ -2588,8 +2595,9 @@ cdef class RTTTransport(object):
     cdef unsigned int _packets_received
     cdef pj_mutex_t *_lock
     cdef pj_pool_t *_pool
-    # cdef pjmedia_stream *_obj
-    # cdef pjmedia_stream_info _stream_info
+    cdef pjmedia_stream *_obj
+    # Used only for storing RTP session description
+    cdef pjmedia_stream_info _stream_info
     # cdef Timer _timer
     cdef readonly object direction
     # cdef readonly AudioMixer mixer
@@ -2655,6 +2663,7 @@ cdef void _RTPTransport_cb_zrtp_not_supported_by_other(pjmedia_transport *tp) wi
 cdef void _RTPTransport_cb_zrtp_ask_enrollment(pjmedia_transport *tp, int info) with gil
 cdef void _RTPTransport_cb_zrtp_inform_enrollment(pjmedia_transport *tp, int info) with gil
 cdef void _AudioTransport_cb_dtmf(pjmedia_stream *stream, void *user_data, int digit) with gil
+cdef void _RTTTransport_cb_rtp(void *user_data, void *pkt, pj_ssize_t size) with gil
 cdef ICECandidate ICECandidate_create(pj_ice_sess_cand *cand)
 cdef ICECheck ICECheck_create(pj_ice_sess_check *check)
 cdef str _ice_state_to_str(int state)

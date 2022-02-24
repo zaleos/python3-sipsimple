@@ -2094,8 +2094,8 @@ cdef class RTTTransport:
             ua = _get_ua()
         except:
             return
-        # if self._obj != NULL:
-        #     self.stop()
+        if self._obj != NULL:
+            self.stop()
         ua.release_memory_pool(self._pool)
         self._pool = NULL
         if self._lock != NULL:
@@ -2106,11 +2106,11 @@ cdef class RTTTransport:
         except SIPCoreError:
             pass
 
-    # property is_active:
+    property is_active:
 
-    #     def __get__(self):
-    #         self._check_ua()
-    #         return bool(self._obj != NULL)
+        def __get__(self):
+            self._check_ua()
+            return bool(self._obj != NULL)
 
     property is_started:
 
@@ -2126,41 +2126,41 @@ cdef class RTTTransport:
     #         else:
     #             return self._stream_info.fmt.clock_rate
 
-    # property statistics:
+    property statistics:
 
-    #     def __get__(self):
-    #         cdef int status
-    #         cdef pj_mutex_t *lock = self._lock
-    #         cdef pjmedia_rtcp_stat stat
-    #         cdef pjmedia_stream *stream
-    #         cdef dict statistics = dict()
-    #         cdef PJSIPUA ua
+        def __get__(self):
+            cdef int status
+            cdef pj_mutex_t *lock = self._lock
+            cdef pjmedia_rtcp_stat stat
+            cdef pjmedia_stream *stream
+            cdef dict statistics = dict()
+            cdef PJSIPUA ua
 
-    #         ua = self._check_ua()
-    #         if ua is None:
-    #             return None
+            ua = self._check_ua()
+            if ua is None:
+                return None
 
-    #         with nogil:
-    #             status = pj_mutex_lock(lock)
-    #         if status != 0:
-    #             raise PJSIPError("failed to acquire lock", status)
-    #         try:
-    #             stream = self._obj
+            with nogil:
+                status = pj_mutex_lock(lock)
+            if status != 0:
+                raise PJSIPError("failed to acquire lock", status)
+            try:
+                stream = self._obj
 
-    #             if stream == NULL:
-    #                 return None
+                if stream == NULL:
+                    return None
 
-    #             with nogil:
-    #                 status = pjmedia_stream_get_stat(stream, &stat)
-    #             if status != 0:
-    #                 raise PJSIPError("Could not get RTP statistics", status)
-    #             statistics["rtt"] = _pj_math_stat_to_dict(&stat.rtt)
-    #             statistics["rx"] = _pjmedia_rtcp_stream_stat_to_dict(&stat.rx)
-    #             statistics["tx"] = _pjmedia_rtcp_stream_stat_to_dict(&stat.tx)
-    #             return statistics
-    #         finally:
-    #             with nogil:
-    #                 pj_mutex_unlock(lock)
+                with nogil:
+                    status = pjmedia_stream_get_stat(stream, &stat)
+                if status != 0:
+                    raise PJSIPError("Could not get RTP statistics", status)
+                statistics["rtt"] = _pj_math_stat_to_dict(&stat.rtt)
+                statistics["rx"] = _pjmedia_rtcp_stream_stat_to_dict(&stat.rx)
+                statistics["tx"] = _pjmedia_rtcp_stream_stat_to_dict(&stat.tx)
+                return statistics
+            finally:
+                with nogil:
+                    pj_mutex_unlock(lock)
 
     def get_local_media(self, BaseSDPSession remote_sdp=None, int index=0, direction="sendrecv"):
         global valid_sdp_directions
@@ -2211,7 +2211,7 @@ cdef class RTTTransport:
 
     def start(self, BaseSDPSession local_sdp, BaseSDPSession remote_sdp, int sdp_index, int timeout=30):
         print('RTTTransport.start() !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!')
-        # cdef int status
+        cdef int status
         # cdef object desired_state
         cdef pj_mutex_t *lock = self._lock
         # cdef pj_pool_t *pool
@@ -2220,9 +2220,10 @@ cdef class RTTTransport:
         # cdef pjmedia_sdp_media *local_media
         cdef pjmedia_sdp_session *pj_local_sdp
         cdef pjmedia_sdp_session *pj_remote_sdp
-        # cdef pjmedia_stream **stream_address
-        # cdef pjmedia_stream_info *stream_info_address
-        # cdef pjmedia_transport *transport
+        cdef pjmedia_stream **stream_address
+        cdef pjmedia_stream_info *stream_info_address
+        cdef pjmedia_transport *transport
+        cdef pjmedia_transport_info *transport_info
         cdef PJSIPUA ua
 
         ua = _get_ua()
@@ -2234,8 +2235,8 @@ cdef class RTTTransport:
         try:
             pool = self._pool
             media_endpoint = ua._pjmedia_endpoint._obj
-        #     stream_address = &self._obj
-        #     stream_info_address = &self._stream_info
+            stream_address = &self._obj
+            stream_info_address = &self._stream_info
             transport = self.transport._obj
 
             if self._is_started:
@@ -2255,34 +2256,36 @@ cdef class RTTTransport:
             if timeout < 0:
                 raise ValueError("timeout value cannot be negative")
             self.transport.set_ESTABLISHED(local_sdp, remote_sdp, sdp_index)
-        #    with nogil:
-        #        status = pjmedia_stream_info_from_sdp(stream_info_address, pool, media_endpoint,
-        #                                              pj_local_sdp, pj_remote_sdp, sdp_index)
-        #    if status != 0:
-        #        raise PJSIPError("Could not parse SDP for text session", status)
-        #    if self._stream_info.param == NULL:
-        #        raise SIPCoreError("Could not parse SDP for text session")
+            with nogil:
+                status = pjmedia_stream_info_from_sdp(stream_info_address, pool, media_endpoint,
+                                                     pj_local_sdp, pj_remote_sdp, sdp_index)
+            if status != 0:
+                raise PJSIPError("Could not parse SDP for text session", status)
+            # if self._stream_info.param == NULL:
+            #     raise SIPCoreError("Could not parse SDP for text session")
+
+            
         #     self._stream_info.param.setting.vad = self._vad
         #     self._stream_info.use_ka = 1
-        #     with nogil:
-        #         status = pjmedia_stream_create(media_endpoint, pool, stream_info_address,
-        #                                        transport, NULL, stream_address)
-        #     if status != 0:
-        #         raise PJSIPError("Could not initialize RTP for audio session", status)
-        #     with nogil:
-        #         status = pjmedia_stream_set_dtmf_callback(stream_address[0], _AudioTransport_cb_dtmf, <void *> self.weakref)
-        #     if status != 0:
-        #         with nogil:
-        #             pjmedia_stream_destroy(stream_address[0])
-        #         self._obj = NULL
-        #         raise PJSIPError("Could not set DTMF callback for audio session", status)
-        #     with nogil:
-        #         status = pjmedia_stream_start(stream_address[0])
-        #     if status != 0:
-        #         with nogil:
-        #             pjmedia_stream_destroy(stream_address[0])
-        #         self._obj = NULL
-        #         raise PJSIPError("Could not start RTP for audio session", status)
+            with nogil:
+                status = pjmedia_stream_create(media_endpoint, pool, stream_info_address,
+                                               transport, NULL, stream_address)
+            if status != 0:
+                raise PJSIPError("Could not initialize RTP for audio session", status)
+            with nogil:
+                status = pjmedia_stream_set_dtmf_callback(stream_address[0], _AudioTransport_cb_dtmf, <void *> self.weakref)
+            if status != 0:
+                with nogil:
+                    pjmedia_stream_destroy(stream_address[0])
+                self._obj = NULL
+                raise PJSIPError("Could not set DTMF callback for audio session", status)
+            with nogil:
+                status = pjmedia_stream_start(stream_address[0])
+            if status != 0:
+                with nogil:
+                    pjmedia_stream_destroy(stream_address[0])
+                self._obj = NULL
+                raise PJSIPError("Could not start RTP for audio session", status)
         #     with nogil:
         #         status = pjmedia_stream_get_port(stream_address[0], &media_port)
         #     if status != 0:
@@ -2299,6 +2302,22 @@ cdef class RTTTransport:
         #             pjmedia_stream_destroy(stream_address[0])
         #         self._obj = NULL
         #         raise
+            
+            # Attach media to transport
+            with nogil:
+                pjmedia_transport_info_init(transport_info)
+                status = pjmedia_transport_get_info(transport, transport_info)
+            if status != 0:
+                raise PJSIPError("Could not get transport info", status)
+            print('HELL: Before attaching transport callback')
+            with nogil:    
+                status = pjmedia_transport_attach(transport, <void *> self.weakref, 
+                                                    &transport_info.src_rtp_name, &transport_info.src_rtcp_name, 
+                                                    sizeof(pj_sockaddr_in), _RTTTransport_cb_rtp, NULL)
+            if status != 0:
+                raise PJSIPError("Error on pjmedia_transport_attach()", status)
+            print('HELL: After attaching transport callback')
+            
             self.update_direction(local_sdp.media[sdp_index].direction)
             self._sdp_info.local_media = local_sdp.media[sdp_index]
             self._sdp_info.local_sdp = local_sdp
@@ -2886,6 +2905,31 @@ cdef void _AudioTransport_cb_dtmf(pjmedia_stream *stream, void *user_data, int d
         _add_event("RTPAudioStreamGotDTMF", dict(obj=audio_stream, digit=chr(digit)))
     except:
         ua._handle_exception(1)
+
+cdef void _RTTTransport_cb_rtp(void *user_data, void *pkt, pj_ssize_t size) with gil:
+
+    print('HELL: YEAH!!! Got RTP payload!')
+
+# pj_status_t pjmedia_rtp_decode_rtp	(	pjmedia_rtp_session * 	ses,
+# const void * 	pkt,
+# int 	pkt_len,
+# const pjmedia_rtp_hdr ** 	hdr,
+# const void ** 	payload,
+# unsigned * 	payloadlen 
+# )	
+
+    # cdef RTTTransport rtt_stream = (<object> user_data)()
+    # cdef PJSIPUA ua
+    # try:
+    #     ua = _get_ua()
+    # except:
+    #     return
+    # if rtt_stream is None:
+    #     return
+    # try:
+    #     _add_event("RTPTextStreamGotText", dict(obj=rtt_stream, digit=chr(digit)))
+    # except:
+    #     ua._handle_exception(1)
 
 # globals
 
