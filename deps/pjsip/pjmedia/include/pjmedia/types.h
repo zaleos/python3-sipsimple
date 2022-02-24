@@ -65,9 +65,6 @@ typedef enum pjmedia_type
     /** The media is application. */
     PJMEDIA_TYPE_APPLICATION,
 
-    /** The media is text. */
-    PJMEDIA_TYPE_TEXT,
-
     /** The media type is unknown or unsupported. */
     PJMEDIA_TYPE_UNKNOWN
 

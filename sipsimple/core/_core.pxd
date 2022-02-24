@@ -740,8 +740,6 @@ cdef extern from "pjmedia.h":
                                       pj_sockaddr_ptr_const origin, pjmedia_sdp_session **p_sdp) nogil
     int pjmedia_endpt_create_audio_sdp(pjmedia_endpt *endpt, pj_pool_t *pool, pjmedia_sock_info_ptr_const si,
                                        unsigned int options, pjmedia_sdp_media **p_media) nogil
-    int pjmedia_endpt_create_text_sdp(pjmedia_endpt *endpt, pj_pool_t *pool, pjmedia_sock_info_ptr_const si,
-                                       unsigned int options, pjmedia_sdp_media **p_media) nogil
     int pjmedia_endpt_create_video_sdp(pjmedia_endpt *endpt, pj_pool_t *pool, pjmedia_sock_info_ptr_const si,
                                        unsigned int options, pjmedia_sdp_media **p_media) nogil
 
@@ -2578,23 +2576,6 @@ cdef class SDPInfo(object):
     cdef BaseSDPSession _local_sdp
     cdef BaseSDPSession _remote_sdp
     cdef public int index
-
-cdef class RTTTransport(object):
-    # attributes
-    cdef object __weakref__
-    cdef object weakref
-    cdef int _is_offer
-    cdef int _is_started
-    cdef unsigned int _packets_received
-    cdef pj_mutex_t *_lock
-    cdef pj_pool_t *_pool
-    # cdef pjmedia_stream *_obj
-    # cdef pjmedia_stream_info _stream_info
-    # cdef Timer _timer
-    cdef readonly object direction
-    # cdef readonly AudioMixer mixer
-    cdef readonly RTPTransport transport
-    cdef SDPInfo _sdp_info
 
 cdef class AudioTransport(object):
     # attributes

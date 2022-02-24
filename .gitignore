@@ -1,8 +1,0 @@
-!.gitignore
-
-__pycache__
-build/lib*
-build/temp*
-
-sipsimple/core/_core.c
-sipsimple/util/_sha1.c
