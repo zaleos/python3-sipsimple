@@ -2664,6 +2664,7 @@ class Session(object):
 
     def _NH_MediaStreamDidStart(self, notification):
         stream = notification.sender
+        print('MediaStreamDidStart: stream.type == ' + stream.type)
         if stream.type == 'audio' and stream.encryption.type == 'ZRTP':
             stream.encryption.zrtp._enable()
         elif stream.type == 'video' and stream.encryption.type == 'ZRTP':
