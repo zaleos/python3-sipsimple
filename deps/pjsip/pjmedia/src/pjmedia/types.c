@@ -34,6 +34,7 @@ static pjmedia_type_map media_type_names[] = {
     {PJMEDIA_TYPE_AUDIO,	"audio"},
     {PJMEDIA_TYPE_VIDEO,	"video"},
     {PJMEDIA_TYPE_APPLICATION,	"application"},
+    {PJMEDIA_TYPE_TEXT,	"text"},
     {PJMEDIA_TYPE_UNKNOWN,	"unknown"}
 };
 
@@ -43,7 +44,7 @@ static pjmedia_type_map media_type_names[] = {
 PJ_DEF(const char*) pjmedia_type_name(pjmedia_type t)
 {
     pj_assert(t < (int)PJ_ARRAY_SIZE(media_type_names));
-    pj_assert(PJMEDIA_TYPE_UNKNOWN == 4);
+    pj_assert(PJMEDIA_TYPE_UNKNOWN == 5);
 
     if (t < (int)PJ_ARRAY_SIZE(media_type_names))
 	return media_type_names[t].name;

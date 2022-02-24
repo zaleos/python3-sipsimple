@@ -403,6 +403,41 @@ static pj_status_t init_sdp_media(pjmedia_sdp_media *m,
     return PJ_SUCCESS;
 }
 
+/* Common initialization for text SDP media line */
+static pj_status_t init_sdp_text_media(pjmedia_sdp_media *m,
+                                  pj_pool_t *pool,
+                                  const pj_str_t *media_type,
+				  const pjmedia_sock_info *sock_info)
+{
+    // char tmp_addr[PJ_INET6_ADDRSTRLEN];
+    // pjmedia_sdp_attr *attr;
+    const pj_sockaddr *addr;
+
+    pj_strdup(pool, &m->desc.media, media_type);
+
+    addr = &sock_info->rtp_addr_name;
+
+    /* Validate address family */
+    PJ_ASSERT_RETURN(addr->addr.sa_family == pj_AF_INET() ||
+                     addr->addr.sa_family == pj_AF_INET6(),
+                     PJ_EAFNOTSUP);
+
+    // /* SDP connection line */
+    // m->conn = PJ_POOL_ZALLOC_T(pool, pjmedia_sdp_conn);
+    // m->conn->net_type = STR_IN;
+    // m->conn->addr_type = (addr->addr.sa_family==pj_AF_INET())? STR_IP4:STR_IP6;
+    // pj_sockaddr_print(addr, tmp_addr, sizeof(tmp_addr), 0);
+    // pj_strdup2(pool, &m->conn->addr, tmp_addr);
+
+    /* Port and transport in media description */
+    m->desc.port = pj_sockaddr_get_port(addr);
+    m->desc.port_count = 1;
+    pj_strdup (pool, &m->desc.transport, &STR_RTP_AVP);
+
+    return PJ_SUCCESS;
+}
+
+
 /* Create m=audio SDP media line */
 PJ_DEF(pj_status_t) pjmedia_endpt_create_audio_sdp(pjmedia_endpt *endpt,
                                                    pj_pool_t *pool,
@@ -869,6 +904,165 @@ PJ_DEF(pj_status_t) pjmedia_endpt_create_video_sdp(pjmedia_endpt *endpt,
 }
 
 #endif /* PJMEDIA_HAS_VIDEO */
+
+
+/* Create m=text SDP media line */
+PJ_DEF(pj_status_t) pjmedia_endpt_create_text_sdp(pjmedia_endpt *endpt,
+                                                   pj_pool_t *pool,
+                                                   const pjmedia_sock_info *si,
+                                                   unsigned options,
+                                                   pjmedia_sdp_media **p_m)
+{
+    const pj_str_t STR_TEXT = { "text", 4 };
+    pjmedia_sdp_media *m;
+    pjmedia_sdp_attr *attr;
+    unsigned i;
+    // unsigned max_bitrate = 0;
+    pj_status_t status;
+    unsigned used_pt_num = 0;
+    unsigned used_pt[PJMEDIA_MAX_SDP_FMT];
+
+    PJ_UNUSED_ARG(options);
+
+
+    /* Create and init basic SDP media */
+    m = PJ_POOL_ZALLOC_T(pool, pjmedia_sdp_media);
+    status = init_sdp_text_media(m, pool, &STR_TEXT, si);
+    if (status != PJ_SUCCESS)
+	return status;
+
+    /* Add format, rtpmap, and fmtp (when applicable) for each codec */
+    for (i=0; i<1; ++i) {
+
+	// pjmedia_codec_info *codec_info;
+	pjmedia_sdp_rtpmap rtpmap;
+	// char tmp_param[3];
+	// pjmedia_codec_param codec_param;
+	pj_str_t *fmt;
+	unsigned pt;
+
+	// codec_info = &endpt->codec_mgr.codec_desc[i].info;
+	// pjmedia_codec_mgr_get_default_param(&endpt->codec_mgr, codec_info,
+	// 				    &codec_param);
+	fmt = &m->desc.fmt[m->desc.fmt_count++];
+	pt = 98;
+
+	/* Rearrange dynamic payload type to make sure it is inside 96-127
+	 * range and not being used by other codec/tel-event.
+	 */
+	if (pt >= 96) {
+	    unsigned pt_check = 96;
+	    unsigned j = 0;
+	    while (j < used_pt_num && pt_check <= 127) {
+		if (pt_check==used_pt[j]) {
+		    pt_check++;
+		    j = 0;
+		} else {
+		    j++;
+		}
+	    }
+	    if (pt_check > 127) {
+		/* No more available PT */
+		PJ_LOG(4,(THIS_FILE, "Warning: no available dynamic "
+			  "payload type for text codec"));
+		break;
+	    }
+	    pt = pt_check;
+	}
+
+	/* Take a note of used dynamic PT */
+	if (pt >= 96)
+	    used_pt[used_pt_num++] = pt;
+
+	fmt->ptr = (char*) pj_pool_alloc(pool, 8);
+	fmt->slen = pj_utoa(pt, fmt->ptr);
+
+	rtpmap.pt = *fmt;
+	rtpmap.enc_name = pj_str("t140");
+
+	rtpmap.clock_rate = 1000;
+
+	// /* For audio codecs, rtpmap parameters denotes the number
+	//  * of channels, which can be omited if the value is 1.
+	//  */
+	// if (codec_info->type == PJMEDIA_TYPE_AUDIO &&
+	//     codec_info->channel_cnt > 1)
+	// {
+	//     /* Can only support one digit channel count */
+	//     pj_assert(codec_info->channel_cnt < 10);
+
+	//     tmp_param[0] = (char)('0' + codec_info->channel_cnt);
+
+	//     rtpmap.param.ptr = tmp_param;
+	//     rtpmap.param.slen = 1;
+
+	// } else {
+	    rtpmap.param.ptr = "";
+	    rtpmap.param.slen = 0;
+	// }
+
+	if (pt >= 96 || pjmedia_add_rtpmap_for_static_pt) {
+	    pjmedia_sdp_rtpmap_to_attr(pool, &rtpmap, &attr);
+	    m->attr[m->attr_count++] = attr;
+	}
+
+	/* Add fmtp params */
+	// if (codec_param.setting.dec_fmtp.cnt > 0) {
+	//     enum { MAX_FMTP_STR_LEN = 160 };
+	//     char buf[MAX_FMTP_STR_LEN];
+	//     unsigned buf_len = 0, ii;
+	//     pjmedia_codec_fmtp *dec_fmtp = &codec_param.setting.dec_fmtp;
+
+	//     /* Print codec PT */
+	//     buf_len += pj_ansi_snprintf(buf,
+	// 				MAX_FMTP_STR_LEN - buf_len,
+	// 				"%d",
+	// 				pt);
+
+	//     for (ii = 0; ii < dec_fmtp->cnt; ++ii) {
+	// 	pj_size_t test_len = 2;
+
+	// 	/* Check if buf still available */
+	// 	test_len = dec_fmtp->param[ii].val.slen + 
+	// 		   dec_fmtp->param[ii].name.slen + 2;
+	// 	if (test_len + buf_len >= MAX_FMTP_STR_LEN)
+	// 	    return PJ_ETOOBIG;
+
+	// 	/* Print delimiter */
+	// 	buf_len += pj_ansi_snprintf(&buf[buf_len], 
+	// 				    MAX_FMTP_STR_LEN - buf_len,
+	// 				    (ii == 0?" ":";"));
+
+	// 	/* Print an fmtp param */
+	// 	if (dec_fmtp->param[ii].name.slen)
+	// 	    buf_len += pj_ansi_snprintf(
+	// 				    &buf[buf_len],
+	// 				    MAX_FMTP_STR_LEN - buf_len,
+	// 				    "%.*s=%.*s",
+	// 				    (int)dec_fmtp->param[ii].name.slen,
+	// 				    dec_fmtp->param[ii].name.ptr,
+	// 				    (int)dec_fmtp->param[ii].val.slen,
+	// 				    dec_fmtp->param[ii].val.ptr);
+	// 	else
+	// 	    buf_len += pj_ansi_snprintf(&buf[buf_len], 
+	// 				    MAX_FMTP_STR_LEN - buf_len,
+	// 				    "%.*s", 
+	// 				    (int)dec_fmtp->param[ii].val.slen,
+	// 				    dec_fmtp->param[ii].val.ptr);
+	//     }
+
+	//     attr = PJ_POOL_ZALLOC_T(pool, pjmedia_sdp_attr);
+
+	//     attr->name = pj_str("fmtp");
+	//     attr->value = pj_strdup3(pool, buf);
+	//     m->attr[m->attr_count++] = attr;
+	// }
+
+    }
+
+    *p_m = m;
+    return PJ_SUCCESS;
+}
 
 
 /**
