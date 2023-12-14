@@ -2007,6 +2007,442 @@ cdef class VideoTransport:
             _add_event("RTPVideoTransportRequestedKeyFrame", dict(obj=self))
 
 
+cdef class RTTTransport:
+    def __cinit__(self, *args, **kwargs):
+        cdef int status
+        cdef PJSIPUA ua
+
+        ua = _get_ua()
+        pool_name = b"RTTTransport_%d" % id(self)
+
+        self.weakref = weakref.ref(self)
+        Py_INCREF(self.weakref)
+
+        status = pj_mutex_create_recursive(ua._pjsip_endpoint._pool, "audio_transport_lock", &self._lock)
+        if status != 0:
+            raise PJSIPError("failed to create lock", status)
+
+        pool = ua.create_memory_pool(pool_name, 4096, 4096)
+        self._pool = pool
+
+
+    def __init__(self, RTPTransport transport, BaseSDPSession remote_sdp=None, int sdp_index=0):
+        cdef int status
+        cdef pj_pool_t *pool
+        cdef pjmedia_endpt *media_endpoint
+        cdef pjmedia_sdp_media *local_media_c
+        cdef pjmedia_sdp_session *local_sdp_c
+        cdef pj_sockaddr *addr
+        cdef pjmedia_transport_info info
+        cdef list global_codecs
+        cdef SDPMediaStream local_media
+        cdef SDPSession local_sdp
+        cdef PJSIPUA ua
+
+        ua = _get_ua()
+        media_endpoint = ua._pjmedia_endpoint._obj
+        pool = self._pool
+
+        if self.transport is not None:
+            raise SIPCoreError("RTTTransport.__init__() was already called")
+        if transport is None:
+            raise ValueError("transport argument cannot be None")
+        if sdp_index < 0:
+            raise ValueError("sdp_index argument cannot be negative")
+        if transport.state != "INIT":
+            raise SIPCoreError('RTPTransport object provided is not in the "INIT" state, but in the "%s" state' %
+                               transport.state)
+
+        self.transport = transport
+        transport._get_info(&info)
+
+        # try:
+        # ua._pjmedia_endpoint._set_codecs(codecs)
+        addr = &info.sock_info.rtp_addr_name
+        with nogil:
+            status = pjmedia_endpt_create_base_sdp(media_endpoint, pool, NULL, addr, &local_sdp_c)
+        if status != 0:
+            raise PJSIPError("Could not generate base SDP", status)
+        with nogil:
+            status = pjmedia_endpt_create_text_sdp(media_endpoint, pool, &info.sock_info, 0, &local_media_c)
+        if status != 0:
+            raise PJSIPError("Could not generate SDP audio stream", status)
+        # Create a 'fake' SDP, which only contains the audio stream, then the m line is extracted because the full
+        # SDP is built by the Session
+        local_sdp_c.media_count = 1
+        local_sdp_c.media[0] = local_media_c
+        # finally:
+        #     ua._pjmedia_endpoint._set_codecs(global_codecs)
+
+        local_sdp = SDPSession_create(local_sdp_c)
+        local_media = local_sdp.media[0]
+        if remote_sdp is None:
+            self._is_offer = 1
+            self.transport.set_LOCAL(local_sdp, 0)
+        else:
+            self._is_offer = 0
+            if sdp_index != 0:
+                local_sdp.media = [None] * (sdp_index+1)
+                local_sdp.media[sdp_index] = local_media
+            self.transport.set_REMOTE(local_sdp, remote_sdp, sdp_index)
+        self._sdp_info = SDPInfo(local_media, local_sdp, remote_sdp, sdp_index)
+
+    def __dealloc__(self):
+        cdef PJSIPUA ua
+        cdef Timer timer
+        try:
+            ua = _get_ua()
+        except:
+            return
+        if self._obj != NULL:
+            self.stop()
+        ua.release_memory_pool(self._pool)
+        self._pool = NULL
+        if self._lock != NULL:
+            pj_mutex_destroy(self._lock)
+        timer = Timer()
+        try:
+            timer.schedule(60, deallocate_weakref, self.weakref)
+        except SIPCoreError:
+            pass
+
+    property is_active:
+
+        def __get__(self):
+            self._check_ua()
+            return bool(self._obj != NULL)
+
+    property is_started:
+
+        def __get__(self):
+            return bool(self._is_started)
+
+    # property sample_rate:
+
+    #     def __get__(self):
+    #         self._check_ua()
+    #         if self._obj == NULL:
+    #             return None
+    #         else:
+    #             return self._stream_info.fmt.clock_rate
+
+    property statistics:
+
+        def __get__(self):
+            cdef int status
+            cdef pj_mutex_t *lock = self._lock
+            cdef pjmedia_rtcp_stat stat
+            cdef pjmedia_stream *stream
+            cdef dict statistics = dict()
+            cdef PJSIPUA ua
+
+            ua = self._check_ua()
+            if ua is None:
+                return None
+
+            with nogil:
+                status = pj_mutex_lock(lock)
+            if status != 0:
+                raise PJSIPError("failed to acquire lock", status)
+            try:
+                stream = self._obj
+
+                if stream == NULL:
+                    return None
+
+                with nogil:
+                    status = pjmedia_stream_get_stat(stream, &stat)
+                if status != 0:
+                    raise PJSIPError("Could not get RTP statistics", status)
+                statistics["rtt"] = _pj_math_stat_to_dict(&stat.rtt)
+                statistics["rx"] = _pjmedia_rtcp_stream_stat_to_dict(&stat.rx)
+                statistics["tx"] = _pjmedia_rtcp_stream_stat_to_dict(&stat.tx)
+                return statistics
+            finally:
+                with nogil:
+                    pj_mutex_unlock(lock)
+
+    def get_local_media(self, BaseSDPSession remote_sdp=None, int index=0, direction="sendrecv"):
+        global valid_sdp_directions
+        cdef int status
+        cdef pj_mutex_t *lock = self._lock
+        cdef object direction_attr
+        cdef SDPAttribute attr
+        cdef SDPSession local_sdp
+        cdef SDPMediaStream local_media
+        cdef pjmedia_sdp_media *c_local_media
+
+        _get_ua()
+
+        with nogil:
+            status = pj_mutex_lock(lock)
+        if status != 0:
+            raise PJSIPError("failed to acquire lock", status)
+        try:
+            is_offer = remote_sdp is None
+            if is_offer and direction not in valid_sdp_directions:
+                raise SIPCoreError("Unknown direction: %s" % direction)
+            self._sdp_info.index = index
+            local_sdp = self._sdp_info.local_sdp
+            local_media = self._sdp_info.local_media
+            local_sdp.media = [None] * (index+1)
+            local_sdp.media[index] = local_media
+            self.transport.update_local_sdp(local_sdp, remote_sdp, index)
+            # updating the local SDP might have modified the connection line
+            if local_sdp.connection is not None and local_media.connection is None:
+                local_media.connection = SDPConnection.new(local_sdp.connection)
+            local_media.attributes = [<object> attr for attr in local_media.attributes if attr.name not in valid_sdp_directions]
+            if is_offer:
+                direction_attr = direction
+            else:
+                if self.direction is None or "recv" in self.direction.decode():
+                    direction_attr = b"sendrecv"
+                else:
+                    direction_attr = b"sendonly"
+            local_media.attributes.append(SDPAttribute(direction_attr, b""))
+            for attribute in local_media.attributes:
+                if attribute.name == b'rtcp':
+                    attribute.value = (attribute.value.decode().split(' ', 1)[0]).encode()
+            self._sdp_info.local_media = local_media
+            return local_media
+        finally:
+            with nogil:
+                pj_mutex_unlock(lock)
+
+    def start(self, BaseSDPSession local_sdp, BaseSDPSession remote_sdp, int sdp_index, int timeout=30):
+        print('RTTTransport.start() !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!')
+        cdef int status
+        # cdef object desired_state
+        cdef pj_mutex_t *lock = self._lock
+        # cdef pj_pool_t *pool
+        cdef pjmedia_endpt *media_endpoint
+        # cdef pjmedia_port *media_port
+        # cdef pjmedia_sdp_media *local_media
+        cdef pjmedia_sdp_session *pj_local_sdp
+        cdef pjmedia_sdp_session *pj_remote_sdp
+        cdef pjmedia_stream **stream_address
+        cdef pjmedia_stream_info *stream_info_address
+        cdef pjmedia_transport *transport
+        cdef pjmedia_transport_info *transport_info
+        cdef PJSIPUA ua
+
+        ua = _get_ua()
+
+        with nogil:
+            status = pj_mutex_lock(lock)
+        if status != 0:
+            raise PJSIPError("failed to acquire lock", status)
+        try:
+            pool = self._pool
+            media_endpoint = ua._pjmedia_endpoint._obj
+            stream_address = &self._obj
+            stream_info_address = &self._stream_info
+            transport = self.transport._obj
+
+            if self._is_started:
+                raise SIPCoreError("This RTTTransport was already started once")
+            desired_state = ("LOCAL" if self._is_offer else "REMOTE")
+            if self.transport.state != desired_state:
+                raise SIPCoreError('RTPTransport object provided is not in the "%s" state, but in the "%s" state' %
+                                   (desired_state, self.transport.state))
+            if None in [local_sdp, remote_sdp]:
+                raise ValueError("SDP arguments cannot be None")
+            pj_local_sdp = local_sdp.get_sdp_session()
+            pj_remote_sdp = remote_sdp.get_sdp_session()
+            if sdp_index < 0:
+                raise ValueError("sdp_index argument cannot be negative")
+            if local_sdp.media[sdp_index].port == 0 or remote_sdp.media[sdp_index].port == 0:
+                raise SIPCoreError("Cannot start a rejected text stream")
+            if timeout < 0:
+                raise ValueError("timeout value cannot be negative")
+            self.transport.set_ESTABLISHED(local_sdp, remote_sdp, sdp_index)
+            with nogil:
+                status = pjmedia_stream_info_from_sdp(stream_info_address, pool, media_endpoint,
+                                                     pj_local_sdp, pj_remote_sdp, sdp_index)
+            if status != 0:
+                raise PJSIPError("Could not parse SDP for text session", status)
+            # if self._stream_info.param == NULL:
+            #     raise SIPCoreError("Could not parse SDP for text session")
+
+            
+        #     self._stream_info.param.setting.vad = self._vad
+        #     self._stream_info.use_ka = 1
+            with nogil:
+                status = pjmedia_stream_create(media_endpoint, pool, stream_info_address,
+                                               transport, NULL, stream_address)
+            if status != 0:
+                raise PJSIPError("Could not initialize RTP for audio session", status)
+            with nogil:
+                status = pjmedia_stream_set_dtmf_callback(stream_address[0], _AudioTransport_cb_dtmf, <void *> self.weakref)
+            if status != 0:
+                with nogil:
+                    pjmedia_stream_destroy(stream_address[0])
+                self._obj = NULL
+                raise PJSIPError("Could not set DTMF callback for audio session", status)
+            with nogil:
+                status = pjmedia_stream_start(stream_address[0])
+            if status != 0:
+                with nogil:
+                    pjmedia_stream_destroy(stream_address[0])
+                self._obj = NULL
+                raise PJSIPError("Could not start RTP for audio session", status)
+        #     with nogil:
+        #         status = pjmedia_stream_get_port(stream_address[0], &media_port)
+        #     if status != 0:
+        #         with nogil:
+        #             pjmedia_stream_destroy(stream_address[0])
+        #         self._obj = NULL
+        #         raise PJSIPError("Could not get audio port for audio session", status)
+        #     try:
+        #         self._slot = self.mixer._add_port(ua, pool, media_port)
+        #         if self._volume != 100:
+        #             self.volume = self._volume
+        #     except:
+        #         with nogil:
+        #             pjmedia_stream_destroy(stream_address[0])
+        #         self._obj = NULL
+        #         raise
+            
+            # Attach media to transport
+            with nogil:
+                pjmedia_transport_info_init(transport_info)
+                status = pjmedia_transport_get_info(transport, transport_info)
+            if status != 0:
+                raise PJSIPError("Could not get transport info", status)
+            print('HELL: Before attaching transport callback')
+            with nogil:    
+                status = pjmedia_transport_attach(transport, <void *> self.weakref, 
+                                                    &transport_info.src_rtp_name, &transport_info.src_rtcp_name, 
+                                                    sizeof(pj_sockaddr_in), _RTTTransport_cb_rtp, NULL)
+            if status != 0:
+                raise PJSIPError("Error on pjmedia_transport_attach()", status)
+            print('HELL: After attaching transport callback')
+            
+            self.update_direction(local_sdp.media[sdp_index].direction)
+            self._sdp_info.local_media = local_sdp.media[sdp_index]
+            self._sdp_info.local_sdp = local_sdp
+            self._sdp_info.remote_sdp = remote_sdp
+            self._sdp_info.index = sdp_index
+            self._is_started = 1
+            # if timeout > 0:
+            #     self._timer = MediaCheckTimer(timeout)
+            #     self._timer.schedule(timeout, <timer_callback>self._cb_check_rtp, self)
+            # self.mixer.reset_ec()
+        finally:
+            with nogil:
+                pj_mutex_unlock(lock)
+
+    def stop(self):
+        print('RTTTransport.stop()')
+        # cdef int status
+        # cdef pj_mutex_t *lock = self._lock
+        # cdef pjmedia_stream *stream
+        # cdef PJSIPUA ua
+
+        # ua = self._check_ua()
+
+        # if ua is not None:
+        #     with nogil:
+        #         status = pj_mutex_lock(lock)
+        #     if status != 0:
+        #         raise PJSIPError("failed to acquire lock", status)
+        # try:
+        #     stream = self._obj
+
+        #     if self._timer is not None:
+        #         self._timer.cancel()
+        #         self._timer = None
+        #     if self._obj == NULL:
+        #         return
+        #     self._obj = NULL
+        #     self.mixer._remove_port(ua, self._slot)
+        #     with nogil:
+        #         pjmedia_stream_destroy(stream)
+        #     self.transport.set_INIT()
+        # finally:
+        #     if ua is not None:
+        #         with nogil:
+        #             pj_mutex_unlock(lock)
+
+    def update_direction(self, direction):
+        print('RTTTransport.update_direction()')
+        cdef int status
+        cdef pj_mutex_t *lock = self._lock
+
+        _get_ua()
+
+        with nogil:
+            status = pj_mutex_lock(lock)
+        if status != 0:
+            raise PJSIPError("failed to acquire lock", status)
+        try:
+            # if self._obj == NULL:
+            #     raise SIPCoreError("Stream is not active")
+            if direction not in valid_sdp_directions:
+                raise SIPCoreError("Unknown direction: %s" % direction)
+            # if direction != self.direction:
+            #     self.mixer.reset_ec()
+            self.direction = direction
+        finally:
+            with nogil:
+                pj_mutex_unlock(lock)
+
+    def update_sdp(self, local_sdp, remote_sdp, index):
+        print('RTTTransport.update_sdp()')
+        # cdef int status
+        # cdef pj_mutex_t *lock = self._lock
+
+        # _get_ua()
+
+        # with nogil:
+        #     status = pj_mutex_lock(lock)
+        # if status != 0:
+        #     raise PJSIPError("failed to acquire lock", status)
+        # try:
+        #     if self._obj == NULL:
+        #         raise SIPCoreError("Stream is not active")
+        #     self._sdp_info.local_media = local_sdp.media[index]
+        #     self._sdp_info.local_sdp = local_sdp
+        #     self._sdp_info.remote_sdp = remote_sdp
+        #     self._sdp_info.index = index
+        # finally:
+        #     with nogil:
+        #         pj_mutex_unlock(lock)
+
+
+    # cdef int _cb_check_rtp(self, MediaCheckTimer timer) except -1:
+        # print('RTTTransport._cb_check_rtp()')
+        # cdef int status
+        # cdef pj_mutex_t *lock = self._lock
+        # cdef pjmedia_rtcp_stat stat
+        # cdef pjmedia_stream *stream
+
+        # with nogil:
+        #     status = pj_mutex_lock(lock)
+        # if status != 0:
+        #     raise PJSIPError("failed to acquire lock", status)
+        # try:
+        #     stream = self._obj
+        #     if stream == NULL:
+        #         return 0
+
+        #     if self._timer is None:
+        #         return 0
+        #     self._timer = None
+        #     with nogil:
+        #         status = pjmedia_stream_get_stat(stream, &stat)
+        #     if status == 0:
+        #         if self._packets_received == stat.rx.pkt and self.direction == "sendrecv":
+        #             _add_event("RTPRTTTransportDidTimeout", dict(obj=self))
+        #         self._packets_received = stat.rx.pkt
+        #         if timer.media_check_interval > 0:
+        #             self._timer = MediaCheckTimer(timer.media_check_interval)
+        #             self._timer.schedule(timer.media_check_interval, <timer_callback>self._cb_check_rtp, self)
+        # finally:
+        #     with nogil:
+        #         pj_mutex_unlock(lock)
+
+
 cdef class ICECandidate:
     def __init__(self, component, cand_type, address, port, priority, rel_addr=''):
         self.component = component
@@ -2469,6 +2905,31 @@ cdef void _AudioTransport_cb_dtmf(pjmedia_stream *stream, void *user_data, int d
         _add_event("RTPAudioStreamGotDTMF", dict(obj=audio_stream, digit=chr(digit)))
     except:
         ua._handle_exception(1)
+
+cdef void _RTTTransport_cb_rtp(void *user_data, void *pkt, pj_ssize_t size) with gil:
+
+    print('HELL: YEAH!!! Got RTP payload!')
+
+# pj_status_t pjmedia_rtp_decode_rtp	(	pjmedia_rtp_session * 	ses,
+# const void * 	pkt,
+# int 	pkt_len,
+# const pjmedia_rtp_hdr ** 	hdr,
+# const void ** 	payload,
+# unsigned * 	payloadlen 
+# )	
+
+    # cdef RTTTransport rtt_stream = (<object> user_data)()
+    # cdef PJSIPUA ua
+    # try:
+    #     ua = _get_ua()
+    # except:
+    #     return
+    # if rtt_stream is None:
+    #     return
+    # try:
+    #     _add_event("RTPTextStreamGotText", dict(obj=rtt_stream, digit=chr(digit)))
+    # except:
+    #     ua._handle_exception(1)
 
 # globals
 

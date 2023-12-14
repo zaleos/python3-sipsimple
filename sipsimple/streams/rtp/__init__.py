@@ -616,5 +616,5 @@ class RTPStream(object, metaclass=RTPStreamType):
         raise NotImplementedError
 
 
-from sipsimple.streams.rtp import audio, video
+from sipsimple.streams.rtp import audio, video, text
 
